@@ -34,11 +34,26 @@ RUN mkdir -p /pd
 # Copy project files
 COPY . /app/
 
+# List files for debugging
+RUN echo "הקבצים שהועתקו לתיקיית /app:" && \
+    ls -la /app && \
+    echo "הקבצים שהועתקו לתיקיית /app/app:" && \
+    ls -la /app/app || echo "תיקיית app לא קיימת"
+
 # Upgrade pip and related tools
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install marker-pdf with extras (fixing the issue by quoting the package spec)
-RUN pip install --no-cache-dir --upgrade "marker-pdf[full]==0.2.7"
+# Create pip.conf with higher timeout settings
+RUN mkdir -p /root/.config/pip && \
+    echo "[global]\ntimeout = 100\nretries = 5" > /root/.config/pip/pip.conf
+
+# Install marker-pdf with multiple retry attempts
+RUN for i in $(seq 1 3); do \
+    echo "Trial $i: Installing marker-pdf..." && \
+    pip install --no-cache-dir --upgrade "marker-pdf[full]==0.2.7" && break || \
+    echo "Attempt $i failed! Waiting 10 seconds..." && \
+    sleep 10; \
+    done
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -48,12 +63,17 @@ RUN mkdir -p /usr/local/lib/python3.9/site-packages/marker \
     && touch /usr/local/lib/python3.9/site-packages/marker/__init__.py \
     && ln -sf /usr/local/lib/python3.9/site-packages/marker_pdf/converters /usr/local/lib/python3.9/site-packages/marker/
 
-# Optional: Verify installation of marker and its files
+# Verify installation of marker and its files
 RUN pip list | grep marker \
     && ls -la /usr/local/lib/python3.9/site-packages/marker*
 
+# Make sure the __init__.py files exist in app directories
+RUN touch /app/app/__init__.py \
+    && touch /app/app/routes/__init__.py \
+    && touch /app/app/services/__init__.py
+
 # Set PYTHONPATH for the application
-ENV PYTHONPATH="/app:/usr/local/lib/python3.9/site-packages"
+ENV PYTHONPATH="/app"
 
 # Expose the port for the service
 EXPOSE 8000
@@ -61,5 +81,17 @@ EXPOSE 8000
 # Set write permissions for /pd
 RUN chmod -R 777 /pd
 
-# Run the service using uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run debug check when starting the container
+CMD echo "בדיקת קבצים עם דיבוג:" && \
+    echo "תיקיית נוכחית:" && pwd && \
+    echo "תוכן התיקייה:" && ls -la && \
+    echo "תוכן תיקיית app:" && ls -la app && \
+    echo "בדיקת import עם Python:" && \
+    python -c "import sys; print(sys.path); \
+    print('Trying imports:'); \
+    import app.main; print('✓ import app.main - OK'); \
+    from app.main import app; print('✓ from app.main import app - OK'); \
+    from app.routes import document_processing; print('✓ from app.routes import document_processing - OK');" || \
+    echo "✗ שגיאות ייבוא - בדוק את הלוגים" && \
+    echo "הפעלת Uvicorn:" && \
+    uvicorn app.main:app --host 0.0.0.0 --port 8000
